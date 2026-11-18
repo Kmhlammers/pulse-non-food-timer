@@ -42,8 +42,8 @@ svg{position:relative;width:100%;height:100%;fill:var(--heart);filter:drop-shado
 </div>
 <div class="done" id="done" hidden>Pulse Non Food is live! ❤️</div>
 <script>
-// Doeldatum aanpassen: voeg ?date=2026-12-01T09:00 toe aan de link, of wijzig DEFAULT hieronder.
-const DEFAULT = "2026-12-01T09:00";
+// Doeldatum aanpassen: voeg ?date=2026-11-19T14:00 toe aan de link, of wijzig DEFAULT hieronder.
+const DEFAULT = "2026-11-19T14:00";
 const q = new URLSearchParams(location.search);
 const target = new Date(q.get("date") || DEFAULT).getTime();
 if (q.get("title")) document.getElementById("title").textContent = q.get("title");
