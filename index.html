@@ -27,9 +27,6 @@ svg{position:relative;width:100%;height:100%;fill:var(--heart);filter:drop-shado
 .num{display:block;font-family:'Libre Baskerville',Georgia,serif;color:var(--fg);font-size:clamp(1.8rem,7vw,3rem);font-weight:700;font-variant-numeric:tabular-nums}
 .lbl{font-size:.75rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
 .done{font-family:'Libre Baskerville',Georgia,serif;font-size:clamp(1.4rem,5vw,2.4rem);font-weight:700;color:var(--fg)}
-.snd{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--card);color:var(--fg);border:2px solid var(--heart);border-radius:999px;padding:.55rem 1.1rem;font:600 .95rem system-ui,sans-serif;cursor:pointer;box-shadow:0 2px 12px rgba(0,56,85,.15)}
-.snd[aria-pressed=true]{background:var(--heart);color:#fff}
-.snd:focus-visible{outline:3px solid var(--fg);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){svg,.heart-wrap::before,.heart-wrap::after{animation:none}}
 </style>
 </head>
@@ -45,7 +42,6 @@ svg{position:relative;width:100%;height:100%;fill:var(--heart);filter:drop-shado
   <div class="unit"><span class="num" id="m">00</span><span class="lbl">minuten</span></div>
   <div class="unit"><span class="num" id="s">00</span><span class="lbl">seconden</span></div>
 </div>
-<button class="snd" id="snd" type="button" aria-pressed="false">🔊 Geluid aan</button>
 <div class="done" id="done" hidden>Pulse Non Food is live! 🧡</div>
 <script>
 // Doeldatum aanpassen: voeg ?date=2026-11-19T14:00 toe aan de link, of wijzig DEFAULT hieronder.
@@ -59,7 +55,7 @@ const $ = id => document.getElementById(id), p = n => String(n).padStart(2,"0");
 // ---------- Spanningsmuziek (Web Audio, geen bestanden) ----------
 // Bouwt op in de laatste BUILD seconden voor de doeltijd en eindigt met een korte stilte + warme klank bij 0.
 const PulseMusic = (() => {
-  const BUILD = 300, TAIL = 7;
+  const BUILD = 600, TAIL = 7;
   const beatAt = p => 1.35 - 0.75*p; // interval van de hartslag (s): rustig (~45 slagen/min) -> sneller (100/min)
   const hz = n => 440*Math.pow(2,(n-69)/12);
   function build(ctx, out, tNow, rem){
@@ -147,7 +143,6 @@ const PulseMusic = (() => {
 })();
 
 const music = { on:false, D:0, ctx:null, master:null };
-const sndBtn = document.getElementById("snd");
 function musicStart(){
   const rem = (target - Date.now())/1000;
   if (!(rem > 1)) return;
@@ -158,23 +153,17 @@ function musicStart(){
   master.gain.setValueAtTime(0, ctx.currentTime); master.gain.linearRampToValueAtTime(1.5, ctx.currentTime+1.5);
   master.connect(comp); comp.connect(ctx.destination);
   PulseMusic.build(ctx, master, ctx.currentTime + .05, rem - .05);
-  // kort belletje als bevestiging dat het geluid aan staat
-  [[660,0],[880,.12]].forEach(([f,d]) => { const o = ctx.createOscillator(), g = ctx.createGain(), t = ctx.currentTime + .05 + d;
-    o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(.18, t+.01); g.gain.exponentialRampToValueAtTime(.0001, t+.6);
-    o.connect(g); g.connect(master); o.start(t); o.stop(t+.7); });
   Object.assign(music, { on:true, D:Math.min(PulseMusic.BUILD, rem), ctx, master });
-  sndBtn.setAttribute("aria-pressed","true"); sndBtn.textContent = "🔇 Geluid uit";
 }
 function musicStop(){
   if (music.ctx){ const c = music.ctx; music.master.gain.cancelScheduledValues(c.currentTime); music.master.gain.setTargetAtTime(0, c.currentTime, .15); setTimeout(() => c.close(), 800); }
   Object.assign(music, { on:false, D:0, ctx:null, master:null });
-  sndBtn.setAttribute("aria-pressed","false"); sndBtn.textContent = "🔊 Geluid aan";
 }
-sndBtn.addEventListener("click", () => music.on ? musicStop() : musicStart());
-if (q.get("muziek") === "aan"){ // browsers laten pas geluid toe na een klik: bij de eerste klik/toets starten
-  const go = e => { if (e && e.target === sndBtn) return; removeEventListener("pointerdown", go); removeEventListener("keydown", go); if (!music.on) musicStart(); };
-  addEventListener("pointerdown", go); addEventListener("keydown", go);
-}
+// Geen zichtbare knop: de eerste klik/tik/toets op de pagina zet de muziek aan (browsers eisen dat).
+// Toets M zet het geluid uit of weer aan.
+const arm = () => { removeEventListener("pointerdown", arm); removeEventListener("keydown", arm); if (!music.on && !music.off) musicStart(); };
+addEventListener("pointerdown", arm); addEventListener("keydown", arm);
+addEventListener("keydown", e => { if (e.key === "m" || e.key === "M"){ if (music.on){ musicStop(); music.off = true; } else { music.off = false; musicStart(); } } });
 
 function tick(){
   let diff = Math.max(0, target - Date.now());
