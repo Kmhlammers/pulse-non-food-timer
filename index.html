@@ -27,6 +27,9 @@ svg{position:relative;width:100%;height:100%;fill:var(--heart);filter:drop-shado
 .num{display:block;font-family:'Libre Baskerville',Georgia,serif;color:var(--fg);font-size:clamp(1.8rem,7vw,3rem);font-weight:700;font-variant-numeric:tabular-nums}
 .lbl{font-size:.75rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
 .done{font-family:'Libre Baskerville',Georgia,serif;font-size:clamp(1.4rem,5vw,2.4rem);font-weight:700;color:var(--fg)}
+.snd{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--card);color:var(--fg);border:2px solid var(--heart);border-radius:999px;padding:.55rem 1.1rem;font:600 .95rem system-ui,sans-serif;cursor:pointer;box-shadow:0 2px 12px rgba(0,56,85,.15)}
+.snd[aria-pressed=true]{background:var(--heart);color:#fff}
+.snd:focus-visible{outline:3px solid var(--fg);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){svg,.heart-wrap::before,.heart-wrap::after{animation:none}}
 </style>
 </head>
@@ -42,14 +45,137 @@ svg{position:relative;width:100%;height:100%;fill:var(--heart);filter:drop-shado
   <div class="unit"><span class="num" id="m">00</span><span class="lbl">minuten</span></div>
   <div class="unit"><span class="num" id="s">00</span><span class="lbl">seconden</span></div>
 </div>
+<button class="snd" id="snd" type="button" aria-pressed="false">🔊 Geluid aan</button>
 <div class="done" id="done" hidden>Pulse Non Food is live! 🧡</div>
 <script>
 // Doeldatum aanpassen: voeg ?date=2026-11-19T14:00 toe aan de link, of wijzig DEFAULT hieronder.
 const DEFAULT = "2026-11-19T14:00";
 const q = new URLSearchParams(location.search);
-const target = new Date(q.get("date") || DEFAULT).getTime();
+// ?over=120 -> doel is 120 seconden vanaf nu (handig om te testen)
+const target = q.get("over") ? Date.now() + (+q.get("over"))*1000 : new Date(q.get("date") || DEFAULT).getTime();
 if (q.get("title")) document.getElementById("title").textContent = q.get("title");
 const $ = id => document.getElementById(id), p = n => String(n).padStart(2,"0");
+
+// ---------- Spanningsmuziek (Web Audio, geen bestanden) ----------
+// Bouwt op in de laatste BUILD seconden voor de doeltijd en eindigt met een korte stilte + warme klank bij 0.
+const PulseMusic = (() => {
+  const BUILD = 300, TAIL = 7;
+  const beatAt = p => 1.35 - 0.75*p; // interval van de hartslag (s): rustig (~45 slagen/min) -> sneller (100/min)
+  const hz = n => 440*Math.pow(2,(n-69)/12);
+  function build(ctx, out, tNow, rem){
+    const D = Math.min(BUILD, rem), T = tNow + rem, t0 = T - D;
+    const noise = ctx.createBuffer(1, ctx.sampleRate*2, ctx.sampleRate);
+    const nd = noise.getChannelData(0); for (let i=0;i<nd.length;i++) nd[i] = Math.random()*2-1;
+    const rvBuf = ctx.createBuffer(2, ctx.sampleRate*3, ctx.sampleRate);
+    for (let c=0;c<2;c++){ const d=rvBuf.getChannelData(c); for (let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2.8); }
+    const rv = ctx.createConvolver(); rv.buffer = rvBuf;
+    const wet = ctx.createGain(); wet.gain.value = .55; wet.connect(rv); rv.connect(out);
+    const send = (node, amt) => { const g = ctx.createGain(); g.gain.value = amt; node.connect(g); g.connect(wet); };
+    const osc = (type, f, a, b) => { const o = ctx.createOscillator(); o.type = type; o.frequency.value = f; o.start(a); o.stop(b); return o; };
+    const env = (g, t, peak, atk, dec) => { g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t+atk); g.gain.exponentialRampToValueAtTime(0.0001, t+atk+dec); };
+
+    // 1. Drone: donker en warm, filter gaat langzaam open
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = .7;
+    lp.frequency.setValueAtTime(320, t0); lp.frequency.exponentialRampToValueAtTime(1500, T-.6);
+    const dg = ctx.createGain();
+    dg.gain.setValueAtTime(.04, t0); dg.gain.exponentialRampToValueAtTime(.16, T-1);
+    dg.gain.setValueAtTime(.16, T-.6); dg.gain.linearRampToValueAtTime(0, T-.5); // stilte vlak voor 0
+    [[hz(33),0],[hz(33),7],[hz(45),-5]].forEach(([f,c]) => { const o = osc('sawtooth', f, t0, T); o.detune.value = c; o.connect(lp); });
+    lp.connect(dg); dg.connect(out); send(dg, .25);
+
+    // 1b. Warme middenlaag vanaf het begin, zodat de muziek ook op laptopspeakers te horen is
+    const mlp = ctx.createBiquadFilter(); mlp.type = 'lowpass'; mlp.Q.value = .6;
+    mlp.frequency.setValueAtTime(500, t0); mlp.frequency.exponentialRampToValueAtTime(1800, T-.6);
+    const mg = ctx.createGain();
+    mg.gain.setValueAtTime(.05, t0); mg.gain.exponentialRampToValueAtTime(.12, T-1);
+    mg.gain.setValueAtTime(.12, T-.6); mg.gain.linearRampToValueAtTime(0, T-.5);
+    [[hz(45),-6],[hz(45),6],[hz(52),0],[hz(57),-4]].forEach(([f,c]) => { const o = osc('sawtooth', f, t0, T); o.detune.value = c; o.connect(mlp); });
+    mlp.connect(mg); mg.connect(out); send(mg, .3);
+
+    // 2. Pad vanaf 40%: A-mineur met een halve toon wrijving die niet oplost tot 0
+    const pg = ctx.createGain();
+    pg.gain.setValueAtTime(.0001, t0+D*.4); pg.gain.exponentialRampToValueAtTime(.05, T-1); pg.gain.linearRampToValueAtTime(0, T-.5);
+    [45,48].forEach(n => osc('sine', hz(n), t0+D*.4, T).connect(pg));
+    const gl = osc('sine', hz(57), t0+D*.4, T); gl.frequency.setValueAtTime(hz(57), t0+D*.4); gl.frequency.linearRampToValueAtTime(hz(58), T-.6); gl.connect(pg);
+    pg.connect(out); send(pg, .6);
+
+    // 3. Hartslag (lub-dub) die sneller en iets luider wordt
+    const thump = (t, v) => {
+      const o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'sine';
+      o.frequency.setValueAtTime(115, t); o.frequency.exponentialRampToValueAtTime(42, t+.15);
+      env(g, t, v, .006, .3); o.connect(g); g.connect(out); o.start(t); o.stop(t+.4);
+      // hoger 'klopje' zodat de hartslag ook op laptop/koptelefoon te horen is
+      const k = ctx.createOscillator(), kg = ctx.createGain(); k.type = 'triangle';
+      k.frequency.setValueAtTime(260, t); k.frequency.exponentialRampToValueAtTime(110, t+.09);
+      env(kg, t, v*.9, .004, .16); k.connect(kg); kg.connect(out); k.start(t); k.stop(t+.25);
+    };
+    for (let t = t0+.5; t < T-.7; ){
+      const p = (t-t0)/D, iv = beatAt(p), v = .18 + .45*p;
+      thump(t, v); thump(t+iv*.27, v*.65);
+      t += iv;
+    }
+
+    // 4. Riser (zacht gefilterde ruis) de laatste 12 s
+    const rs = ctx.createBufferSource(); rs.buffer = noise; rs.loop = true;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 1.2;
+    bp.frequency.setValueAtTime(350, T-12); bp.frequency.exponentialRampToValueAtTime(3200, T-.6);
+    const rg = ctx.createGain();
+    rg.gain.setValueAtTime(.0001, T-12); rg.gain.exponentialRampToValueAtTime(.05, T-1); rg.gain.linearRampToValueAtTime(0, T-.5);
+    rs.connect(bp); bp.connect(rg); rg.connect(out); rs.start(T-12); rs.stop(T);
+
+    // 5. Tikjes: laatste 10 seconden, zacht houtachtig (geen piepjes)
+    for (let k = 10; k >= 1; k--){
+      const t = T-k; if (t < t0) continue;
+      const s = ctx.createBufferSource(); s.buffer = noise;
+      const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 5;
+      const g = ctx.createGain(); env(g, t, .12 + (10-k)*.012, .002, .05);
+      s.connect(f); f.connect(g); g.connect(out); s.start(t, 0, .1);
+    }
+
+    // 6. Bij 0: grote warme klank (A-majeur) + diepe boom + luchtige ruis, in de galm
+    const sg = ctx.createGain(); sg.connect(out); send(sg, 1);
+    [57,61,64,69,76].forEach((n,i) => { const g = ctx.createGain(); env(g, T, .07/(1+i*.15), .12, 5.5);
+      const o = osc('triangle', hz(n), T, T+6); o.detune.value = i%2 ? 4 : -4; o.connect(g); g.connect(sg); });
+    const bg = ctx.createGain(); env(bg, T, .6, .01, 1.8);
+    const bo = ctx.createOscillator(); bo.frequency.setValueAtTime(70, T); bo.frequency.exponentialRampToValueAtTime(30, T+1.2);
+    bo.connect(bg); bg.connect(out); bo.start(T); bo.stop(T+2);
+    const cs = ctx.createBufferSource(); cs.buffer = noise;
+    const cf = ctx.createBiquadFilter(); cf.type = 'lowpass'; cf.frequency.value = 3500;
+    const cg = ctx.createGain(); env(cg, T, .09, .05, 2); cs.connect(cf); cf.connect(cg); cg.connect(sg); cs.start(T, 0, 2.5);
+  }
+  return { build, beatAt, BUILD, TAIL };
+})();
+
+const music = { on:false, D:0, ctx:null, master:null };
+const sndBtn = document.getElementById("snd");
+function musicStart(){
+  const rem = (target - Date.now())/1000;
+  if (!(rem > 1)) return;
+  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+  const ctx = new AC(), master = ctx.createGain();
+  if (ctx.resume) ctx.resume();
+  const comp = ctx.createDynamicsCompressor();
+  master.gain.setValueAtTime(0, ctx.currentTime); master.gain.linearRampToValueAtTime(1.5, ctx.currentTime+1.5);
+  master.connect(comp); comp.connect(ctx.destination);
+  PulseMusic.build(ctx, master, ctx.currentTime + .05, rem - .05);
+  // kort belletje als bevestiging dat het geluid aan staat
+  [[660,0],[880,.12]].forEach(([f,d]) => { const o = ctx.createOscillator(), g = ctx.createGain(), t = ctx.currentTime + .05 + d;
+    o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(.18, t+.01); g.gain.exponentialRampToValueAtTime(.0001, t+.6);
+    o.connect(g); g.connect(master); o.start(t); o.stop(t+.7); });
+  Object.assign(music, { on:true, D:Math.min(PulseMusic.BUILD, rem), ctx, master });
+  sndBtn.setAttribute("aria-pressed","true"); sndBtn.textContent = "🔇 Geluid uit";
+}
+function musicStop(){
+  if (music.ctx){ const c = music.ctx; music.master.gain.cancelScheduledValues(c.currentTime); music.master.gain.setTargetAtTime(0, c.currentTime, .15); setTimeout(() => c.close(), 800); }
+  Object.assign(music, { on:false, D:0, ctx:null, master:null });
+  sndBtn.setAttribute("aria-pressed","false"); sndBtn.textContent = "🔊 Geluid aan";
+}
+sndBtn.addEventListener("click", () => music.on ? musicStop() : musicStart());
+if (q.get("muziek") === "aan"){ // browsers laten pas geluid toe na een klik: bij de eerste klik/toets starten
+  const go = e => { if (e && e.target === sndBtn) return; removeEventListener("pointerdown", go); removeEventListener("keydown", go); if (!music.on) musicStart(); };
+  addEventListener("pointerdown", go); addEventListener("keydown", go);
+}
+
 function tick(){
   let diff = Math.max(0, target - Date.now());
   if (isNaN(target)) diff = 0;
@@ -60,7 +186,9 @@ function tick(){
   $("s").textContent = p(s%60);
   // hartslag versnelt naarmate de lancering dichterbij komt
   const days = s/86400;
-  document.documentElement.style.setProperty("--beat", (days>7?1.2:days>1?1:days>0.04?.8:.6)+"s");
+  let beat = days>7?1.2:days>1?1:days>0.04?.8:.6;
+  if (music.on && music.D && diff/1000 < music.D) beat = PulseMusic.beatAt(1 - diff/1000/music.D); // hart loopt gelijk met de muziek
+  document.documentElement.style.setProperty("--beat", beat.toFixed(3)+"s");
   if (diff===0){ $("timer").hidden=true; $("sub").hidden=true; $("done").hidden=false; return; }
   setTimeout(tick, 1000 - Date.now()%1000);
 }
